@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 
 var sysClassDMIID = "/sys/class/dmi/id"
 var systemType string
+var lshwData []byte
 
 // GetSystem returns a filled api.ResourcesSystem struct ready for use by LXD.
 func GetSystem() (*api.ResourcesSystem, error) {
@@ -26,6 +28,35 @@ func GetSystem() (*api.ResourcesSystem, error) {
 	system.Type = systemType
 
 	if !sysfsExists(sysClassDMIID) {
+		// Fallback to lshw
+		if lshwData == nil {
+			lshwData, err = getLshwData()
+			if err != nil {
+				// To maintain the same behaviour, we have to omit this error.
+				lshwData = []byte{}
+			}
+		}
+
+		if len(lshwData) == 0 {
+			return &system, nil
+		}
+
+		type systemClass struct {
+			Product string `json:"product"`
+			Serial  string `json:"serial"`
+			Vendor  string `json:"vendor"`
+		}
+
+		var systemClasses []systemClass
+		err = json.Unmarshal([]byte(lshwData), &systemClasses)
+		if err != nil || len(systemClasses) == 0 {
+			return &system, nil
+		}
+
+		system.Vendor = strings.TrimSpace(systemClasses[0].Vendor)
+		system.Product = strings.TrimSpace(systemClasses[0].Product)
+		system.Serial = strings.TrimSpace(systemClasses[0].Serial)
+
 		return &system, nil
 	}
 
@@ -330,4 +361,18 @@ func systemGetMotherboard() (*api.ResourcesSystemMotherboard, error) {
 	}
 
 	return &motherboard, nil
+}
+
+func getLshwData() ([]byte, error) {
+	_, err := exec.LookPath("lshw")
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := exec.Command("lshw", "-json", "-c", "system").Output()
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
